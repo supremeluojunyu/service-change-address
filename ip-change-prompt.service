@@ -1,0 +1,39 @@
+[Unit]
+Description=Boot-time console prompt to change local IP (netplan 50-cloud-init.yaml)
+Documentation=file:///usr/local/share/ip-change-prompt/README.md
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+Before=network-pre.target network.target networking.service systemd-networkd.service NetworkManager.service getty@tty1.service graphical.target multi-user.target
+Wants=network-pre.target
+Conflicts=getty@tty1.service
+ConditionPathExists=/etc/netplan/50-cloud-init.yaml
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ip-change-prompt.sh
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+# 脚本异常退出时自动拉起，成功超时/完成则保持 RemainAfterExit
+Restart=on-failure
+RestartSec=2
+# 密码 30s + 首次改密约 60s + 改 IP 60s + 余量
+TimeoutStartSec=180
+# 需要改 netplan 并可能 reboot
+User=root
+Environment=IP_CHANGE_AUTH_TIMEOUT=30
+Environment=IP_CHANGE_TIMEOUT=60
+Environment=NETPLAN_FILE=/etc/netplan/50-cloud-init.yaml
+Environment=IP_CHANGE_TTY=/dev/tty1
+Environment=IP_CHANGE_CONFIG=/etc/ip-change-prompt.conf
+
+[Install]
+WantedBy=multi-user.target
+WantedBy=graphical.target
