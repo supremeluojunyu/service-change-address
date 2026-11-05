@@ -1,6 +1,6 @@
 #!/bin/bash
 # 开机时在控制台提示修改本机 IP（写入 netplan 50-cloud-init.yaml）
-# 先校验密码：错误或 30s 超时则直接继续开机；密码正确后再进入改 IP 阶段
+# 先校验密码：错误或超时则直接继续开机；密码正确后再进入改 IP 阶段
 # 首次（FORCE_CHANGE_PASSWORD=1）可通过提示行改密，需确认一遍；配置文件仍可用 nano 编辑
 
 set -euo pipefail
@@ -13,13 +13,38 @@ TTY="${IP_CHANGE_TTY:-/dev/tty1}"
 # 默认密码，可被配置文件或环境变量 IP_CHANGE_PASSWORD 覆盖
 DEFAULT_PASSWORD="123456789"
 
+# 尽量让早期控制台能显示提示
+export LANG="${LANG:-en_US.UTF-8}"
+export LC_ALL="${LC_ALL:-en_US.UTF-8}"
+
 log() {
-  echo "[ip-change-prompt] $*" | tee -a /var/log/ip-change-prompt.log >&2 || true
+  echo "[ip-change-prompt] $*" | tee -a /var/log/ip-change-prompt.log >/dev/null 2>&1 || true
 }
 
 die() {
   log "ERROR: $*"
+  echo
+  echo "[ERROR] $*"
+  echo "[错误] $*"
+  sleep 2
   exit 1
+}
+
+# 强制打到当前控制台并刷新
+say() {
+  printf '%s\n' "$*"
+}
+
+say_n() {
+  printf '%s' "$*"
+}
+
+prepare_console() {
+  stty sane 2>/dev/null || true
+  stty echo 2>/dev/null || true
+  clear 2>/dev/null || true
+  # 给 plymouth/切换终端一点时间，避免提示被盖住
+  sleep 0.5
 }
 
 conf_get() {
@@ -197,43 +222,63 @@ PY
 
 prompt_password() {
   local expected="$1"
-  local first_boot_hint=""
-  if need_force_change_password; then
-    first_boot_hint="  - 首次开机：验证通过后可设置新密码（需确认一遍）"
-  fi
 
-  clear || true
+  prepare_console
   cat <<EOF
 
-========================================
-  本机 IP 修改（需要密码）
-========================================
-请输入密码以进入 IP 修改：
-  - ${AUTH_TIMEOUT}s 内未输入 / 密码错误: 直接继续开机
-  - 密码正确: 进入后续步骤
-${first_boot_hint}
-========================================
+############################################################
+#  IP Change Service / 本机 IP 修改服务
+############################################################
+#  STEP 1/2: Enter password / 第1步：请输入登录密码
+############################################################
+#
+#  EN: Enter the password to change IP.
+#      - No input within ${AUTH_TIMEOUT}s  -> continue boot
+#      - Wrong password                   -> continue boot
+#      - Correct password                 -> next step
+#
+#  中文: 请输入密码以进入 IP 修改。
+#      - ${AUTH_TIMEOUT} 秒内不输入        -> 直接继续开机
+#      - 密码错误                         -> 直接继续开机
+#      - 密码正确                         -> 进入下一步
+#
+############################################################
 
 EOF
 
-  echo -n "密码 > "
+  say_n "Password / 密码 > "
   local input=""
+  # -s 不回显密码；超时则继续开机
   if ! read -r -s -t "$AUTH_TIMEOUT" input; then
     echo
-    echo "密码输入超时（${AUTH_TIMEOUT}s），按原配置继续开机。"
+    say "[Timeout] No password in ${AUTH_TIMEOUT}s. Continue boot with current IP."
+    say "[超时] ${AUTH_TIMEOUT} 秒未输入密码，按原配置继续开机。"
     log "auth timeout, continue boot"
+    sleep 1
     return 1
   fi
   echo
 
-  if [[ "$input" != "$expected" ]]; then
-    echo "密码错误，按原配置继续开机。"
-    log "auth failed, continue boot"
+  if [[ -z "$input" ]]; then
+    say "[Skip] Empty password. Continue boot with current IP."
+    say "[跳过] 未输入密码，按原配置继续开机。"
+    log "auth empty, continue boot"
+    sleep 1
     return 1
   fi
 
-  echo "密码正确。"
+  if [[ "$input" != "$expected" ]]; then
+    say "[Failed] Wrong password. Continue boot with current IP."
+    say "[失败] 密码错误，按原配置继续开机。"
+    log "auth failed, continue boot"
+    sleep 2
+    return 1
+  fi
+
+  say "[OK] Password accepted."
+  say "[成功] 密码正确。"
   log "auth ok"
+  sleep 1
   return 0
 }
 
@@ -241,102 +286,129 @@ EOF
 prompt_change_password_first_boot() {
   need_force_change_password || return 0
 
-  clear || true
+  prepare_console
   cat <<EOF
 
-========================================
-  首次开机：修改密码
-========================================
-当前仍是初始密码，建议设置新密码。
-  - 输入新密码后需再确认一遍
-  - 直接回车 / ${AUTH_TIMEOUT}s 超时: 跳过，保留当前密码
-  - 也可稍后用 nano 修改: sudo nano $CONFIG_FILE
-========================================
+############################################################
+#  First boot: change password / 首次开机：修改密码
+############################################################
+#
+#  EN: Set a new password (optional).
+#      - Enter new password, then confirm once
+#      - Empty / timeout ${AUTH_TIMEOUT}s -> keep current password
+#      - Later you can also: sudo nano ${CONFIG_FILE}
+#
+#  中文: 建议设置新密码（可跳过）。
+#      - 输入新密码后需再确认一遍
+#      - 直接回车 / ${AUTH_TIMEOUT} 秒超时 -> 保留当前密码
+#      - 也可稍后: sudo nano ${CONFIG_FILE}
+#
+############################################################
 
 EOF
 
   local new_pw confirm
-  echo -n "新密码 > "
+  say_n "New password / 新密码 > "
   if ! read -r -s -t "$AUTH_TIMEOUT" new_pw; then
     echo
-    echo "改密超时，跳过。保留当前密码，下次不再强制提示。"
+    say "[Timeout] Keep current password."
+    say "[超时] 保留当前密码。"
     conf_set FORCE_CHANGE_PASSWORD 0
     log "password change skipped (timeout)"
+    sleep 1
     return 0
   fi
   echo
 
   if [[ -z "$new_pw" ]]; then
-    echo "已跳过改密，保留当前密码。"
+    say "[Skip] Keep current password."
+    say "[跳过] 保留当前密码。"
     conf_set FORCE_CHANGE_PASSWORD 0
     log "password change skipped (empty)"
+    sleep 1
     return 0
   fi
 
-  echo -n "确认新密码 > "
+  say_n "Confirm password / 确认新密码 > "
   if ! read -r -s -t "$AUTH_TIMEOUT" confirm; then
     echo
-    echo "确认超时，未修改密码。"
+    say "[Timeout] Password not changed."
+    say "[超时] 未修改密码。"
     conf_set FORCE_CHANGE_PASSWORD 0
     log "password confirm timeout, keep old"
+    sleep 1
     return 0
   fi
   echo
 
   if [[ "$new_pw" != "$confirm" ]]; then
-    echo "两次输入不一致，未修改密码。"
+    say "[Mismatch] Two inputs differ. Password not changed."
+    say "[不一致] 两次输入不同，未修改密码。"
     conf_set FORCE_CHANGE_PASSWORD 0
     log "password confirm mismatch, keep old"
-    sleep 1
+    sleep 2
     return 0
   fi
 
   conf_set PASSWORD "$new_pw"
   conf_set FORCE_CHANGE_PASSWORD 0
-  echo "新密码已保存到 $CONFIG_FILE"
+  say "[OK] New password saved to ${CONFIG_FILE}"
+  say "[成功] 新密码已保存到 ${CONFIG_FILE}"
   log "password changed via first-boot prompt"
   sleep 1
   return 0
 }
 
 prompt_ip_change() {
-  local current current_ip current_prefix="24"
-  current="$(extract_current_address)" || die "无法读取当前 IP"
-  current_ip="${current%%/*}"
+  local current current_prefix="24"
+  current="$(extract_current_address)" || die "Cannot read current IP / 无法读取当前 IP"
   if [[ "$current" == */* ]]; then
     current_prefix="${current##*/}"
   fi
 
-  clear || true
+  prepare_console
   cat <<EOF
 
-========================================
-  本机 IP 修改
-========================================
-配置文件: $NETPLAN_FILE
-当前地址: $current
-
-请输入新 IP：
-  - 例如: 192.168.3.100
-  - 或带掩码: 192.168.3.100/24
-  - 直接回车 / ${TIMEOUT}s 超时: 按原配置继续开机
-========================================
+############################################################
+#  STEP 2/2: Change IP address / 第2步：输入要修改的 IP
+############################################################
+#
+#  Config / 配置文件 : ${NETPLAN_FILE}
+#  Current IP / 当前地址 : ${current}
+#
+#  EN: Enter the new IP address to apply.
+#      - Example: 192.168.3.100
+#      - Or CIDR: 192.168.3.100/24
+#      - Empty / no input within ${TIMEOUT}s -> continue boot
+#      - If changed, system will reboot immediately
+#
+#  中文: 请输入需要修改的 IP 地址。
+#      - 例如: 192.168.3.100
+#      - 或带掩码: 192.168.3.100/24
+#      - 直接回车 / ${TIMEOUT} 秒不输入 -> 直接继续开机
+#      - 若已修改，将立刻重启生效
+#
+############################################################
 
 EOF
 
-  echo -n "新 IP > "
+  say_n "New IP / 新 IP > "
   local input=""
   if ! read -r -t "$TIMEOUT" input; then
     echo
-    echo "已超时（${TIMEOUT}s），按原配置继续开机。"
+    say "[Timeout] No IP in ${TIMEOUT}s. Continue boot with ${current}."
+    say "[超时] ${TIMEOUT} 秒未输入 IP，按原配置继续开机。"
     log "ip timeout, keep $current"
+    sleep 1
     return 0
   fi
 
   input="$(echo "$input" | tr -d '[:space:]')"
   if [[ -z "$input" ]]; then
-    echo "未输入，按原配置继续开机。"
+    say "[Skip] Empty IP. Continue boot with ${current}."
+    say "[跳过] 未输入 IP，按原配置继续开机。"
     log "empty ip input, keep $current"
+    sleep 1
     return 0
   fi
 
@@ -348,41 +420,50 @@ EOF
     new_ip="$input"
   fi
 
-  is_ipv4 "$new_ip" || die "非法 IPv4 地址: $new_ip"
-  is_cidr "$new_prefix" || die "非法掩码前缀: $new_prefix"
+  is_ipv4 "$new_ip" || die "Invalid IPv4: $new_ip / 非法 IPv4 地址: $new_ip"
+  is_cidr "$new_prefix" || die "Invalid prefix: $new_prefix / 非法掩码前缀: $new_prefix"
 
   local new_addr="${new_ip}/${new_prefix}"
   if [[ "$new_addr" == "$current" ]]; then
-    echo "与当前地址相同，无需修改，继续开机。"
+    say "[OK] Same as current IP. Continue boot."
+    say "[提示] 与当前地址相同，无需修改，继续开机。"
     log "unchanged $current"
+    sleep 1
     return 0
   fi
 
   echo
-  echo "将把地址从 $current 改为 $new_addr"
-  echo "正在写入 $NETPLAN_FILE ..."
-  write_new_address "$new_addr" || die "写入 netplan 失败"
+  say "[Apply] Change IP: ${current} -> ${new_addr}"
+  say "[应用] 正在把地址从 ${current} 改为 ${new_addr}"
+  say "Writing ${NETPLAN_FILE} ..."
+  write_new_address "$new_addr" || die "Failed to write netplan / 写入 netplan 失败"
 
   if command -v netplan >/dev/null 2>&1; then
-    netplan generate || die "netplan generate 校验失败，请检查配置"
+    netplan generate || die "netplan generate failed / netplan 校验失败"
   fi
 
   log "changed $current -> $new_addr, rebooting"
-  echo "配置已更新，系统将立即重启..."
+  say "[OK] Config updated. Rebooting now..."
+  say "[成功] 配置已更新，系统将立即重启..."
   sync
-  sleep 1
+  sleep 2
   systemctl reboot --no-block || /sbin/reboot
   return 0
 }
 
 main() {
-  [[ -r "$NETPLAN_FILE" ]] || die "找不到 $NETPLAN_FILE"
-  [[ "$(id -u)" -eq 0 ]] || die "需要 root 权限"
+  [[ -r "$NETPLAN_FILE" ]] || die "Missing $NETPLAN_FILE / 找不到配置文件"
+  [[ "$(id -u)" -eq 0 ]] || die "Root required / 需要 root 权限"
 
-  # 确保绑定到控制台
+  # 绑定到控制台（虚拟机请看控制台或 Ctrl+Alt+F1）
   if [[ -e "$TTY" ]]; then
     exec <>"$TTY" >&0 2>&0
   fi
+
+  prepare_console
+  say "IP Change Service starting on ${TTY} ..."
+  say "本机 IP 修改服务正在启动（控制台 ${TTY}）..."
+  sleep 1
 
   # 配置文件不存在时写入初始模板（与 nano 编辑格式一致）
   if [[ ! -f "$CONFIG_FILE" ]]; then

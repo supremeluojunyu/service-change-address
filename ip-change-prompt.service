@@ -3,6 +3,8 @@ Description=Boot-time console prompt to change local IP (netplan 50-cloud-init.y
 Documentation=file:///usr/local/share/ip-change-prompt/README.md
 DefaultDependencies=no
 After=local-fs.target systemd-udevd.service
+# 等开机动画退出后再提示，避免屏幕上看不到输入框
+After=plymouth-quit.service
 # 只拦 getty@tty1：提示结束后 getty 再起来，不要 Conflicts，否则会永久挡住登录
 Before=getty@tty1.service network-pre.target
 Wants=network-pre.target
@@ -14,8 +16,10 @@ StartLimitBurst=3
 Type=oneshot
 # 必须为 no：完成后释放，让 getty/登录界面正常启动
 RemainAfterExit=no
+# 强制关掉 plymouth，保证 tty1 能看见中英文提示
+ExecStartPre=-/usr/bin/plymouth quit --retain-splash
 ExecStart=/usr/local/sbin/ip-change-prompt.sh
-StandardInput=tty
+StandardInput=tty-force
 StandardOutput=tty
 StandardError=tty
 TTYPath=/dev/tty1
@@ -31,6 +35,8 @@ Environment=IP_CHANGE_TIMEOUT=60
 Environment=NETPLAN_FILE=/etc/netplan/50-cloud-init.yaml
 Environment=IP_CHANGE_TTY=/dev/tty1
 Environment=IP_CHANGE_CONFIG=/etc/ip-change-prompt.conf
+Environment=LANG=en_US.UTF-8
+Environment=LC_ALL=en_US.UTF-8
 
 [Install]
 WantedBy=multi-user.target

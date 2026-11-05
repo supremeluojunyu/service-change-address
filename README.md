@@ -20,12 +20,15 @@ cd service-change-address-main
 sudo ./install.sh
 ```
 
-## 开机行为
+## 开机行为（中英文提示）
 
 1. 自动启动 `ip-change-prompt.service`（挂了会按 `Restart=on-failure` 拉起）
-2. **输入密码**（初始 `123456789`，30 秒超时或错误 → 直接继续开机）
+2. **STEP 1：输入登录密码 / Enter password**（初始 `123456789`）
+   - **30 秒**不输入或密码错误 → **直接继续开机**
 3. **首次开机**（`FORCE_CHANGE_PASSWORD=1`）可改密，需确认一遍；也可跳过
-4. **改 IP**（60 秒）：写入 `/etc/netplan/50-cloud-init.yaml` 后立刻重启；超时则按原配置开机
+4. **STEP 2：输入要修改的 IP / Enter new IP**（**60 秒**）
+   - 写入 `/etc/netplan/50-cloud-init.yaml` 后立刻重启
+   - 不输入 / 超时 → 按原配置继续开机
 
 控制台：`tty1`（虚拟机控制台或 Ctrl+Alt+F1）。纯 SSH 看不到提示。
 
